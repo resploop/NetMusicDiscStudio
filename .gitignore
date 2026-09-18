@@ -1,0 +1,38 @@
+# ── Gradle ────────────────────────────────────────────────────────────────
+.gradle/
+build/
+repo/
+src/generated/resources/.cache/
+
+# ── 运行目录（./gradlew runClient / runServer 生成）──────────────────────
+run/
+run-data/
+runs/
+
+# ── IDE ───────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+.settings/
+.classpath
+.project
+.factorypath
+.metadata/
+bin/
+out/
+eclipse/
+
+# ── 日志与崩溃报告 ────────────────────────────────────────────────────────
+*.log
+*.hprof
+hs_err_pid*
+
+# ── 上游附属模组的本地构建产物 ────────────────────────────────────────────
+# NetMusicCanPlayBili 没有发布到 Maven，需要自己构建后放进 libs/。
+# 这是第三方 jar，不随本仓库分发；取用方式见 libs/README.md。
+libs/*.jar
+
+# ── 贴图脚本的预览输出（可用 --preview 随时重新生成）─────────────────────
+tools/preview/

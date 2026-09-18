@@ -1,0 +1,9 @@
+{
+  "parent": "minecraft:item/generated",
+  "textures": {
+    "layer0": {
+      "sprite": "netmusic_disc_studio:item/erasable_network_disc",
+      "force_translucent": true
+    }
+  }
+}

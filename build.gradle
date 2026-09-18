@@ -1,0 +1,152 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'idea'
+    id 'eclipse'
+    id 'net.neoforged.moddev' version '2.0.141'
+}
+
+version = mod_version
+group = mod_group_id
+
+java.toolchain.languageVersion = JavaLanguageVersion.of(25)
+
+// NetMusicCanPlayBili 没有发布到任何 Maven 仓库，需要先在外部构建好再放到 libs/。
+// 查找顺序：-PncpbJar=<路径> > libs/ 下的任意 jar。
+// 用惰性 provider 而不是写死文件名，是因为上游 jar 名跟着 project.name/version 变
+// （当前是 net-music-can-play-bili-0.7.10-beta.jar），写死最容易踩坑。
+def upstreamModJars = providers.provider {
+    String explicit = providers.gradleProperty('ncpbJar').orNull
+    if (explicit != null && !explicit.isBlank()) {
+        File jar = file(explicit)
+        if (!jar.isFile()) {
+            throw new GradleException("-PncpbJar 指向的文件不存在: ${jar}")
+        }
+        return files(jar)
+    }
+    FileCollection found = fileTree('libs') { include '*.jar' }
+    if (found.isEmpty()) {
+        throw new GradleException(
+                "libs/ 里没有 NetMusicCanPlayBili 的构建产物。先构建上游再放进来：\n" +
+                "  cd <NetMusicCanPlayBili> && ./gradlew jar\n" +
+                "  cp build/libs/*.jar <本工程>/libs/\n" +
+                "也可以用 -PncpbJar=<jar 的绝对路径> 临时指定。")
+    }
+    return found
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+        content {
+            includeGroup 'maven.modrinth'
+        }
+    }
+    maven {
+        name = 'NeoForged'
+        url = 'https://maven.neoforged.net/releases'
+    }
+}
+
+neoForge {
+    version = project.neo_version
+
+    runs {
+        client {
+            client()
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+        server {
+            server()
+            programArgument '--nogui'
+            systemProperty 'neoforge.enabledGameTestNamespaces', project.mod_id
+        }
+        data {
+            clientData()
+            programArguments.addAll '--mod', project.mod_id, '--all', '--output',
+                    file('src/generated/resources/').getAbsolutePath(),
+                    '--existing', file('src/main/resources/').getAbsolutePath()
+        }
+        configureEach {
+            systemProperty 'forge.logging.markers', 'REGISTRIES'
+            logLevel = org.slf4j.event.Level.DEBUG
+        }
+    }
+
+    mods {
+        "${mod_id}" {
+            sourceSet(sourceSets.main)
+        }
+    }
+}
+
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+dependencies {
+    // NetMusic 是必需依赖：SongInfo 模型、SESSDATA 之外的解析器 SPI、现代化唱片机都来自它。
+    compileOnly "maven.modrinth:net-music:${netmusic_version}"
+    runtimeOnly "maven.modrinth:net-music:${netmusic_version}"
+
+    // NetMusicCanPlayBili：B 站解析器与现代化唱片机方块实体。
+    // 它是完整模组 jar，开发环境里 FML 的 classpath 扫描会直接把它当模组加载。
+    compileOnly files(upstreamModJars)
+    runtimeOnly files(upstreamModJars)
+
+    testImplementation platform('org.junit:junit-bom:5.13.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+// 用 Gradle 属性展开模组元数据模板。
+var generateModMetadata = tasks.register('generateModMetadata', ProcessResources) {
+    var replaceProperties = [minecraft_version      : minecraft_version,
+                             minecraft_version_range: minecraft_version_range,
+                             neo_version            : neo_version,
+                             neo_version_range      : neo_version_range,
+                             loader_version_range   : loader_version_range,
+                             mod_id                 : mod_id,
+                             mod_name               : mod_name,
+                             mod_license            : mod_license,
+                             mod_version            : mod_version,
+                             mod_authors            : mod_authors,
+                             mod_description        : mod_description,
+                             netmusic_version_range : netmusic_version_range,
+                             ncpb_version_range     : ncpb_version_range]
+    inputs.properties replaceProperties
+    expand replaceProperties
+    from 'src/main/templates'
+    into 'build/generated/sources/modMetadata'
+}
+sourceSets.main.resources.srcDir generateModMetadata
+neoForge.ideSyncTask generateModMetadata
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.compilerArgs.add('-Xlint:-classfile')
+}
+
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            from(components.java)
+        }
+    }
+    repositories {
+        maven {
+            url = layout.projectDirectory.dir('repo').asFile.toURI()
+        }
+    }
+}
+
+idea {
+    module {
+        downloadSources = true
+        downloadJavadoc = true
+    }
+}

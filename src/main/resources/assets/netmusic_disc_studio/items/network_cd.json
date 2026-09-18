@@ -1,0 +1,18 @@
+{
+  "model": {
+    "type": "minecraft:condition",
+    "property": "minecraft:has_component",
+    "component": "netmusic_disc_studio:album_playlist",
+    "on_true": {
+      "type": "minecraft:special",
+      "base": "netmusic_disc_studio:item/network_cd",
+      "model": {
+        "type": "netmusic_disc_studio:album_cover"
+      }
+    },
+    "on_false": {
+      "type": "minecraft:model",
+      "model": "netmusic_disc_studio:item/network_cd"
+    }
+  }
+}

@@ -1,0 +1,6 @@
+plugins {
+    // Gradle 9 使用 1.0.0+；daemon JVM 标准会让 wrapper 和 IDE 自动选择 Java 25。
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'netmusic-disc-studio'

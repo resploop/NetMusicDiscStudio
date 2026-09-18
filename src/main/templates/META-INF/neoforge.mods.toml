@@ -1,0 +1,46 @@
+modLoader = "javafml"
+loaderVersion = "${loader_version_range}"
+license = "${mod_license}"
+
+[[mods]]
+modId = "${mod_id}"
+version = "${mod_version}"
+displayName = "${mod_name}"
+authors = "${mod_authors}"
+description = '''${mod_description}'''
+
+[[mixins]]
+config = "${mod_id}.mixins.json"
+
+# ── NetMusic 依赖（必需）─────────────────────────────────────────────────
+[[dependencies."${mod_id}"]]
+modId = "netmusic"
+type = "required"
+versionRange = "${netmusic_version_range}"
+ordering = "AFTER"
+side = "BOTH"
+reason = "NetMusic Disc Studio is an addon for NetMusic — it stores NetMusic song info on its own disc items"
+
+# ── NetMusicCanPlayBili 依赖（必需）──────────────────────────────────────
+[[dependencies."${mod_id}"]]
+modId = "net_music_can_play_bili"
+type = "required"
+versionRange = "${ncpb_version_range}"
+ordering = "AFTER"
+side = "BOTH"
+reason = "The rewritable disc and album CD only make sense on the modern turntable added by NetMusicCanPlayBili"
+
+# ── NeoForge / Minecraft ────────────────────────────────────────────────
+[[dependencies."${mod_id}"]]
+modId = "neoforge"
+type = "required"
+versionRange = "${neo_version_range}"
+ordering = "NONE"
+side = "BOTH"
+
+[[dependencies."${mod_id}"]]
+modId = "minecraft"
+type = "required"
+versionRange = "${minecraft_version_range}"
+ordering = "NONE"
+side = "BOTH"

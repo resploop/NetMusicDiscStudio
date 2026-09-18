@@ -1,0 +1,12 @@
+# 仓库内文本一律按 LF 存储，避免跨平台协作时整文件 diff。
+* text=auto eol=lf
+
+# Windows 批处理按 CRLF 检出，交给 cmd.exe 更保险。
+*.bat text eol=crlf
+
+# 二进制资源不做换行转换。
+*.png binary
+*.jpg binary
+*.jar binary
+*.ogg binary
+*.nbt binary

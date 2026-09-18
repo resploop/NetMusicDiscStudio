@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "result": {
+    "id": "netmusic_disc_studio:erasable_network_disc"
+  },
+  "ingredients": [
+    "netmusic:music_cd",
+    "minecraft:redstone",
+    "minecraft:glowstone_dust",
+    "minecraft:iron_nugget"
+  ]
+}

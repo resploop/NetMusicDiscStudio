@@ -1,0 +1,12 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "result": {
+    "id": "netmusic_disc_studio:network_cd"
+  },
+  "ingredients": [
+    "netmusic:music_cd",
+    "minecraft:redstone",
+    "minecraft:amethyst_shard",
+    "minecraft:ender_pearl"
+  ]
+}
