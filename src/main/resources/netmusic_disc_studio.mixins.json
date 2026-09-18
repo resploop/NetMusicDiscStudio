@@ -8,6 +8,7 @@
     "CDInputMixin",
     "CDOutputMixin",
     "ItemMusicCDMixin",
+    "MP4ItemMixin",
     "ModernTurntableBlockEntityMixin",
     "ModernTurntableBlockMixin"
   ],
@@ -15,6 +16,8 @@
     "client.BlackGoldScreenAccessor",
     "client.CDBurnerMenuScreenMixin",
     "client.ComputerMenuScreenMixin",
+    "client.MP4FocusStateMixin",
+    "client.MP4QueueCompletionPolicyMixin",
     "client.ModernTurntableScreenMixin",
     "client.ScreenInvoker"
   ],
