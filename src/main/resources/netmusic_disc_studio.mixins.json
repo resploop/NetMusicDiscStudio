@@ -19,6 +19,7 @@
     "client.BlackGoldScreenAccessor",
     "client.CDBurnerMenuScreenMixin",
     "client.ComputerMenuScreenMixin",
+    "client.HttpAudioStreamHandlerMixin",
     "client.MP4AutoResumeClientMixin",
     "client.MP4FocusScreenMixin",
     "client.MP4FocusStateMixin",
