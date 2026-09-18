@@ -5,15 +5,23 @@ import com.github.tartaricacid.netmusic.item.ItemMusicCD;
 import com.netmusic.discstudio.DiscStudio;
 import com.netmusic.discstudio.api.NetEaseAlbumApi;
 import com.netmusic.discstudio.api.NetEaseReference;
+import com.netmusic.discstudio.bili.Mp4AlbumAdvance;
+import com.netmusic.discstudio.bili.Mp4AlbumScope;
+import com.netmusic.discstudio.bili.Mp4QueueWriter;
 import com.netmusic.discstudio.disc.AlbumPlaylist;
 import com.netmusic.discstudio.disc.DiscLoopMode;
 import com.netmusic.discstudio.disc.DiscShuffle;
 import com.netmusic.discstudio.disc.LoopModeHolder;
 import com.netmusic.discstudio.disc.NetworkDiscs;
 import com.netmusic.discstudio.network.DiscStudioTrackPacket;
+import com.netmusic.discstudio.network.Mp4AlbumScopePacket;
+import com.netmusic.discstudio.network.Mp4AlbumTrackPacket;
 import com.netmusic.discstudio.network.SwapBvPacket;
 import com.zhongbai233.net_music_can_play_bili.bili.BiliAudioResolver;
 import com.zhongbai233.net_music_can_play_bili.blockentity.ModernTurntableBlockEntity;
+import com.zhongbai233.net_music_can_play_bili.item.MP4Item;
+import com.zhongbai233.net_music_can_play_bili.network.MP4DeviceStateStore;
+import com.zhongbai233.net_music_can_play_bili.network.MP4PlaybackControlPacket;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
@@ -23,7 +31,10 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.transfer.item.ItemResource;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -226,6 +237,72 @@ public final class DiscStudioService {
         return level.getBlockEntity(pos) instanceof LoopModeHolder holder
                 ? holder.discstudio$loopMode()
                 : DiscLoopMode.SEQUENTIAL;
+    }
+
+    // ─────────────────────────── MP4：专辑切曲 ───────────────────────────
+
+    /**
+     * 把 MP4 队列里某一条「网络CD」切到第 {@code trackIndex} 首。
+     * <p>
+     * 一张网络CD在 MP4 队列里只占一条，"播到第几首"就写在这条物品自己的
+     * {@code album_playlist} 组件里。因为这个 NBT 只有服务端说了算，
+     * MP4 界面里的切歌必须走这里：先改写队列，再（可选地）把播放重启到这一条。
+     * <p>
+     * 曲目只按碟自带的曲目表取，客户端传什么名称/URL 都不作数。
+     */
+    public static void controlMp4Album(ServerPlayer player, Mp4AlbumTrackPacket packet) {
+        UUID deviceId = packet.deviceId();
+        if (deviceId == null || !(player.level() instanceof ServerLevel level)) {
+            return;
+        }
+        ItemStack device = MP4Item.findByDeviceId(player, deviceId);
+        if (!(device.getItem() instanceof MP4Item) || !deviceId.equals(MP4Item.readDeviceId(device))) {
+            return;
+        }
+        List<ItemStack> queue = new ArrayList<>(MP4Item.readQueue(device));
+        if (queue.isEmpty()) {
+            return;
+        }
+        int queueIndex = Math.max(0, Math.min(queue.size() - 1, packet.queueIndex()));
+        ItemStack entry = queue.get(queueIndex);
+        AlbumPlaylist playlist = NetworkDiscs.playlist(entry);
+        if (playlist == null || playlist.size() <= 1) {
+            // 单曲条目没有"第几首"可言；真需要换歌就是换队列项，走上游那套。
+            return;
+        }
+        int trackIndex = Math.max(0, Math.min(playlist.size() - 1, packet.trackIndex()));
+        if (trackIndex != playlist.selectedIndex()) {
+            NetworkDiscs.selectTrack(entry, playlist.select(trackIndex));
+            Mp4QueueWriter.write(device, queue);
+        }
+        if (!packet.restart()) {
+            return;
+        }
+        int volume = MP4DeviceStateStore.getOrCreate(level, deviceId, device).state().volumePerMille();
+        MP4PlaybackControlPacket.restartSelected(player, device, deviceId, queueIndex, volume);
+        // 与 Mp4AlbumAdvance 同一处收尾：restartSelected 内部的 stop() 会把旧曲目
+        // "播到结尾"的位置写进进度存档，而恢复会话时用的正是这份进度 —— 不清零的话
+        // 新曲目一开场就落在结尾前几十毫秒，几十毫秒后又"播完"，表现成连续跳歌。
+        Mp4AlbumAdvance.resetTrackProgress(level, player, deviceId, device, queueIndex);
+    }
+
+    /**
+     * 客户端 MP4 界面上报「此刻停在哪个视图层」（进了某张专辑的曲目表 / 停在列表层）。
+     * <p>
+     * 服务端唯一的用途是决定<b>自动播完时随机播放的范围</b>：在专辑里就这张碟内随机换一首，
+     * 在列表层就整个队列随机换一张碟（见 {@code Mp4AlbumAdvance}）。视图层是客户端才有的概念，
+     * 所以只能由它报上来。这里校验玩家确实持有这台设备，伪报最多影响自己那台 MP4。
+     */
+    public static void reportMp4AlbumScope(ServerPlayer player, Mp4AlbumScopePacket packet) {
+        UUID deviceId = packet.deviceId();
+        if (deviceId == null) {
+            return;
+        }
+        ItemStack device = MP4Item.findByDeviceId(player, deviceId);
+        if (!(device.getItem() instanceof MP4Item) || !deviceId.equals(MP4Item.readDeviceId(device))) {
+            return;
+        }
+        Mp4AlbumScope.report(deviceId, packet.albumQueueIndex());
     }
 
     // ─────────────────────────── 工具 ───────────────────────────

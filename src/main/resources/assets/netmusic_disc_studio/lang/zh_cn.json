@@ -37,6 +37,7 @@
   "message.netmusic_disc_studio.album_burned": "已刻录专辑「%s」，共 %s 首",
   "message.netmusic_disc_studio.album_truncated": "曲目数超过上限，仅保留前 %s 首",
   "message.netmusic_disc_studio.no_playlist": "这张唱片里没有可切换的曲目",
+  "message.netmusic_disc_studio.mp4_queue_full": "MP4 的队列已满（最多 %s 张碟），先取出一些再放",
   "message.netmusic_disc_studio.blank_disc_needs_burning": "这是一张空盘，请先用唱片刻录机刻入内容",
   "gui.netmusic_disc_studio.open_swap_bv": "✎ 换 BV",
   "gui.netmusic_disc_studio.swap_bv.title": "♫ 换 BV",

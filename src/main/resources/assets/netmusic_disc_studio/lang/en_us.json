@@ -37,6 +37,7 @@
   "message.netmusic_disc_studio.album_burned": "Burned album \"%s\", %s tracks",
   "message.netmusic_disc_studio.album_truncated": "Track count over the limit, only the first %s were kept",
   "message.netmusic_disc_studio.no_playlist": "This disc has no track list to switch through",
+  "message.netmusic_disc_studio.mp4_queue_full": "The MP4 queue is full (max %s discs); remove some first",
   "message.netmusic_disc_studio.blank_disc_needs_burning": "This disc is blank — burn content into it at a CD burner first",
   "gui.netmusic_disc_studio.open_swap_bv": "✎ BV",
   "gui.netmusic_disc_studio.swap_bv.title": "♫ Swap BV",

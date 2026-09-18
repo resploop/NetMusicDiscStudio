@@ -8,6 +8,7 @@ import net.minecraft.network.codec.ByteBufCodecs;
 import net.minecraft.network.codec.StreamCodec;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -85,7 +86,15 @@ public record AlbumPlaylist(String kind, String sourceId, String title, String c
             AlbumPlaylist::new);
 
     public AlbumPlaylist {
-        tracks = List.copyOf(tracks);
+        // 用"逐个滤 null"的写法而不是 List.copyOf：后者遇到 null 元素会直接抛 NPE。
+        // 表可能来自接口返回、NBT 或网络包，三个来源都不该让客户端因为一条空曲目而崩。
+        List<ItemMusicCD.SongInfo> cleaned = new ArrayList<>(tracks.size());
+        for (ItemMusicCD.SongInfo track : tracks) {
+            if (track != null) {
+                cleaned.add(track);
+            }
+        }
+        tracks = Collections.unmodifiableList(cleaned);
         selectedIndex = tracks.isEmpty() ? 0 : Math.floorMod(selectedIndex, tracks.size());
         coverUrl = coverUrl == null ? "" : coverUrl;
     }
@@ -93,9 +102,18 @@ public record AlbumPlaylist(String kind, String sourceId, String title, String c
     /** 建表并把曲目数截断到 {@link #MAX_TRACKS}。 */
     public static AlbumPlaylist of(String kind, String sourceId, String title, String coverUrl,
                                    List<ItemMusicCD.SongInfo> tracks) {
-        List<ItemMusicCD.SongInfo> limited = tracks.size() > MAX_TRACKS
-                ? List.copyOf(tracks.subList(0, MAX_TRACKS))
-                : List.copyOf(tracks);
+        // 顺手滤掉 null：接口返回里偶尔会出现空条目，留到 List.copyOf 或者编码时就是
+        // 一个 NPE（List.copyOf 对 null 元素直接 Objects.requireNonNull）。
+        List<ItemMusicCD.SongInfo> limited = new ArrayList<>(Math.min(tracks.size(), MAX_TRACKS));
+        for (ItemMusicCD.SongInfo track : tracks) {
+            if (track == null) {
+                continue;
+            }
+            limited.add(track);
+            if (limited.size() >= MAX_TRACKS) {
+                break;
+            }
+        }
         return new AlbumPlaylist(kind, sourceId, title, coverUrl, limited, 0);
     }
 

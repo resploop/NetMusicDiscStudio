@@ -9,6 +9,9 @@
     "CDOutputMixin",
     "ItemMusicCDMixin",
     "MP4ItemMixin",
+    "MP4PlaybackProgressPersistenceMixin",
+    "MP4PlaybackSyncManagerMixin",
+    "MP4QueueControllerMixin",
     "ModernTurntableBlockEntityMixin",
     "ModernTurntableBlockMixin"
   ],
@@ -16,8 +19,12 @@
     "client.BlackGoldScreenAccessor",
     "client.CDBurnerMenuScreenMixin",
     "client.ComputerMenuScreenMixin",
+    "client.MP4AutoResumeClientMixin",
+    "client.MP4FocusScreenMixin",
     "client.MP4FocusStateMixin",
     "client.MP4QueueCompletionPolicyMixin",
+    "client.Mp4GuiViewStateMixin",
+    "client.Mp4PlaybackUiStateMixin",
     "client.ModernTurntableScreenMixin",
     "client.ScreenInvoker"
   ],
