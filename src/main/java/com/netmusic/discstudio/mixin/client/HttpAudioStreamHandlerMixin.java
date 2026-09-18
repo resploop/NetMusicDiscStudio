@@ -1,5 +1,6 @@
 package com.netmusic.discstudio.mixin.client;
 
+import com.github.tartaricacid.netmusic.client.api.implement.DirectHttpHandler;
 import com.github.tartaricacid.netmusic.client.api.implement.NetEaseHttpHandler;
 import com.netmusic.discstudio.client.Mp4RangeSeek;
 import com.zhongbai233.net_music_can_play_bili.media.sync.PlaybackRequest;
@@ -86,6 +87,32 @@ public class HttpAudioStreamHandlerMixin {
             at = @At(value = "INVOKE",
                     target = "Lcom/github/tartaricacid/netmusic/client/api/implement/NetEaseHttpHandler;handle(Ljava/net/URL;)Ljavax/sound/sampled/AudioInputStream;"))
     private static AudioInputStream discstudio$openAtSeekPosition(NetEaseHttpHandler handler, URL url)
+            throws UnsupportedAudioFileException, IOException {
+        AudioInputStream ranged = Mp4RangeSeek.tryOpenRanged(url, Mp4RangeSeek.currentRequest());
+        return ranged != null ? ranged : handler.handle(url);
+    }
+
+    /**
+     * 同上，但管的是<b>实际会走的</b>那条分支。
+     *
+     * <p>⚠️ 2026-09-19 踩过的坑：{@code fallbackHttpStream} 里有两条并列的"开流"分支 ——
+     * <pre>
+     *   stream = new NetEaseHttpHandler().canHandle(url)
+     *          ? new NetEaseHttpHandler().handle(url)     // 只认 host.contains("music.163.com")
+     *          : new DirectHttpHandler().handle(url);     // ← 网易云 CDN 直链走这条
+     * </pre>
+     * 而网易云真正的直链是 {@code http://m10.music.126.net/...}（{@code NetEaseMusic.getHost()}
+     * 返回的却是 {@code music.163.com}），{@code canHandle} 必然 false
+     * —— 只 redirect 左边那条时，本模组的代码<b>一次都不会被调用</b>：
+     * 日志里 {@code Mixing ... HttpAudioStreamHandlerMixin} 正常、
+     * {@code HTTP 音频起播追赶完成 setup=56025ms} 照旧，只是完全没有 {@code MP4 快进} 字样。
+     * <p><b>教训：{@code @Redirect} 之前要把这个调用点的<b>所有并列分支</b>都数出来，
+     * 不能只挑名字最像的那个类。</b>
+     */
+    @Redirect(method = "fallbackHttpStream",
+            at = @At(value = "INVOKE",
+                    target = "Lcom/github/tartaricacid/netmusic/client/api/implement/DirectHttpHandler;handle(Ljava/net/URL;)Ljavax/sound/sampled/AudioInputStream;"))
+    private static AudioInputStream discstudio$openAtSeekPositionDirect(DirectHttpHandler handler, URL url)
             throws UnsupportedAudioFileException, IOException {
         AudioInputStream ranged = Mp4RangeSeek.tryOpenRanged(url, Mp4RangeSeek.currentRequest());
         return ranged != null ? ranged : handler.handle(url);

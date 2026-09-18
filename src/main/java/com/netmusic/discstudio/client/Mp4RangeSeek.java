@@ -77,6 +77,9 @@ public final class Mp4RangeSeek {
     /** 短距离快进上游本来就够快（几十毫秒），不去碰。 */
     private static final double MIN_SEEK_SECONDS = 8.0;
 
+    /** 太短的曲子（试听片段之类）不折腾，换算误差占比也会偏大。 */
+    private static final double MIN_TRACK_SECONDS = 30.0;
+
     /** 网易云 exhigh（320 kbps）约 40 KB/s；落在这个区间才当它是正常 mp3，否则不猜。 */
     private static final double MIN_BYTES_PER_SECOND = 8_000.0;
     private static final double MAX_BYTES_PER_SECOND = 72_000.0;
@@ -178,7 +181,7 @@ public final class Mp4RangeSeek {
         try {
             return openRanged(url, request);
         } catch (Throwable t) {
-            LOGGER.debug("MP4 快进：按字节定位没成功，退回上游的从头追赶（{}）", t.toString());
+            LOGGER.debug("MP4 快进：按字节定位抛异常，退回上游的从头追赶（{}）", t.toString());
             return null;
         }
     }
@@ -186,47 +189,53 @@ public final class Mp4RangeSeek {
     private static AudioInputStream openRanged(URL url, PlaybackRequest request)
             throws IOException, InterruptedException, UnsupportedAudioFileException {
         if (!isNetEaseHost(url)) {
-            return null;
+            return skip(url, "不是网易云主机");
         }
         double totalSeconds = request.totalMillis() / 1000.0;
         double targetSeconds = request.elapsedMillis() / 1000.0;
-        if (totalSeconds <= 30.0 || targetSeconds < MIN_SEEK_SECONDS) {
-            return null;
+        if (totalSeconds <= MIN_TRACK_SECONDS) {
+            return skip(url, "曲长只有 " + totalSeconds + " 秒，上游本来就追得上");
+        }
+        if (targetSeconds < MIN_SEEK_SECONDS) {
+            return skip(url, "只快进了 " + targetSeconds + " 秒，上游本来就追得上");
         }
         if (targetSeconds >= totalSeconds - 1.0) {
             // 已经贴着曲尾了，让上游的夹取逻辑去处理，别在这里猜字节。
-            return null;
+            return skip(url, "目标 " + targetSeconds + " 秒已贴曲尾（曲长 " + totalSeconds + " 秒）");
         }
 
         // ① 探头部：总长度、ID3 之后第一个 MP3 帧的位置。
         Probe head = fetch(buildRequest(url, 0L, PROBE_BYTES - 1L), PROBE_BYTES);
         if (head.status() != 200 && head.status() != 206) {
-            return null;
+            return skip(url, "探测请求返回 HTTP " + head.status());
         }
         long totalBytes = totalBytes(head);
         if (totalBytes <= 0L) {
-            return null;
+            return skip(url, "拿不到文件总长度");
         }
         byte[] headBytes = head.body();
         int firstFrame = Mp3FrameSync.findFrameSync(headBytes, headBytes.length);
         if (firstFrame < 0) {
-            return null;
+            return skip(url, "头部 " + headBytes.length + " 字节里没有 MP3 帧同步头（多半不是 mp3）");
         }
         Mp3FrameSync.Frame frame = Mp3FrameSync.parseFrame(headBytes, firstFrame, headBytes.length);
         if (frame == null) {
-            return null;
+            return skip(url, "首个帧头解析失败");
         }
 
         // ② 恒定码率换算：字节/秒 = (总长度 - 标签头) / 曲长。
         double bytesPerSecond = (totalBytes - firstFrame) / totalSeconds;
         if (bytesPerSecond < MIN_BYTES_PER_SECOND || bytesPerSecond > MAX_BYTES_PER_SECOND) {
-            return null;
+            return skip(url, "平均码率 " + Math.round(bytesPerSecond / 1000.0) + " KB/s 不在 "
+                    + Math.round(MIN_BYTES_PER_SECOND / 1000.0) + "~"
+                    + Math.round(MAX_BYTES_PER_SECOND / 1000.0) + " 区间");
         }
         double frameBytesPerSecond = frameBytesPerSecond(frame);
         if (frameBytesPerSecond > 0.0
                 && Math.abs(frameBytesPerSecond - bytesPerSecond) > bytesPerSecond * RATE_TOLERANCE) {
             // 首帧码率和平均码率对不上 ⇒ 多半是变码率文件，线性换算会偏出去很远，不猜。
-            return null;
+            return skip(url, "疑似变码率（首帧 " + Math.round(frameBytesPerSecond / 1000.0)
+                    + " KB/s vs 平均 " + Math.round(bytesPerSecond / 1000.0) + " KB/s）");
         }
 
         long byteOffset = firstFrame + Math.round(targetSeconds * bytesPerSecond);
@@ -239,7 +248,7 @@ public final class Mp4RangeSeek {
         InputStream raw = response.body();
         if (status != 200 && status != 206) {
             closeQuietly(raw);
-            return null;
+            return skip(url, "区间请求返回 HTTP " + status);
         }
 
         byte[] window;
@@ -258,25 +267,25 @@ public final class Mp4RangeSeek {
         long windowStart = range != null && range.isKnown() ? range.start() : -1L;
         if (windowStart <= 0L) {
             closeQuietly(raw);
-            return null;
+            return skip(url, "服务端没有回可解析的 Content-Range（不敢假设流从目标字节开始）");
         }
 
         int sync = Mp3FrameSync.findFrameSync(window, window.length);
         if (sync < 0) {
             closeQuietly(raw);
-            return null;
+            return skip(url, "区间前 " + window.length + " 字节里没有 MP3 帧同步头");
         }
         Mp3FrameSync.Frame landed = Mp3FrameSync.parseFrame(window, sync, window.length);
         if (landed == null || landed.sampleRate() != frame.sampleRate()) {
             closeQuietly(raw);
-            return null;
+            return skip(url, "落点帧头解析失败或采样率与头部不一致");
         }
 
         long landedBytes = windowStart + sync;
         double landedSeconds = (landedBytes - firstFrame) / bytesPerSecond;
         if (landedSeconds < 0.0 || landedSeconds > targetSeconds + 1.5) {
             closeQuietly(raw);
-            return null;
+            return skip(url, "落点 " + landedSeconds + " 秒偏离目标 " + targetSeconds + " 秒太远");
         }
 
         InputStream stream = new BufferedInputStream(new SequenceInputStream(
@@ -400,6 +409,20 @@ public final class Mp4RangeSeek {
             }
         }
         return false;
+    }
+
+    /**
+     * 这次不接管，把流交给上游的"从头读 + 解码丢弃"。
+     *
+     * <p>每一条放弃路径都要留一句话，否则下次"快进还是没声音"就只能靠猜
+     * —— 这类问题发生在网络/CDN/文件格式层面，光看现象区分不出来。
+     * 用 {@code DEBUG} 打，正常游玩时不会刷屏。
+     *
+     * @return 恒为 {@code null}，方便写成 {@code return skip(url, "...");}
+     */
+    private static AudioInputStream skip(URL url, String reason) {
+        LOGGER.debug("MP4 快进：这次不接管（{}），退回上游的从头追赶：{}", reason, url);
+        return null;
     }
 
     private static void closeQuietly(InputStream stream) {
