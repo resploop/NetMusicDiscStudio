@@ -14,7 +14,7 @@ import java.util.List;
  * MP4 队列的写入口。
  * <p>
  * 上游 {@code MP4Item#writeQueue} 是 {@code private static}，本模组要"改写队列"
- * （摊平专辑、整组取出）就必须能写回去。
+ * （专辑内切曲、服务端控制播放时写回选中项）就必须能写回去。
  * <p>
  * 这里<b>不</b>用 {@code @Invoker} 去撬私有方法，而是用公开 API 原样复刻它的实现：
  * 队列就存在物品的 {@code minecraft:custom_data} 里，结构简单且稳定，
