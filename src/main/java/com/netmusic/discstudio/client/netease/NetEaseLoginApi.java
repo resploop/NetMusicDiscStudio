@@ -1,7 +1,6 @@
 package com.netmusic.discstudio.client.netease;
 
 import com.github.tartaricacid.netmusic.api.EncryptUtils;
-import com.github.tartaricacid.netmusic.api.NetEaseMusic;
 import com.github.tartaricacid.netmusic.api.NetWorker;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
@@ -18,45 +17,85 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * 网易云扫码登录的三个接口调用。
  * <p>
- * 复用 NetMusic 已经有的两样东西，不重复造：
+ * 复用 NetMusic 已经有的东西，不重复造：
  * <ul>
  *   <li>{@link EncryptUtils#encryptedParam} —— weapi 的 AES 双层加密 + RSA；
- *       上游原本只用它请求专辑与歌单，登录接口的加密方式完全相同，直接拿来用。</li>
- *   <li>{@link NetWorker#HTTP_CLIENT} —— 带用户代理配置的 HttpClient。</li>
+ *       明文轮询失手时用它兜底。上游原本只用它请求专辑与歌单，加密方式完全相同。</li>
+ *   <li>{@link NetWorker#HTTP_CLIENT} 的代理配置 —— 见下方 {@link #LOGIN_CLIENT}。</li>
  * </ul>
  * 所有方法都会阻塞，必须在工作线程调用，不要在界面线程直接调。
  * <p>
  * <b>为什么二维码流程单独用一个带 CookieJar 的 HttpClient：</b>网易云在
- * {@code unikey} 响应里会顺手下发 {@code NMTID} 之类的会话 Cookie，官方网页是带着它去轮询的。
- * {@link NetWorker#HTTP_CLIENT} 不带 CookieJar，轮询请求等于"零 Cookie 裸奔"，
- * 很容易被风控盯上。这里换一个挂了 {@link CookieManager} 的客户端，让两跳共享同一份 Cookie。
+ * {@code unikey} 响应里会顺手下发 {@code NMTID} 之类的会话 Cookie，官方客户端是带着它去轮询的。
+ * {@link NetWorker#HTTP_CLIENT} 不带 CookieJar，轮询请求等于"零 Cookie 裸奔"。
+ * 这里换一个挂了 {@link CookieManager} 的客户端，让两跳共享同一份 Cookie。
  * <p>
- * <b>关于 8821：</b>实测（并与 ncmctl / HyPlayer 等第三方实现的说法一致）网易云现在对
- * 扫码登录的风控非常严，扫完确认后服务端可能直接回 {@code 8821 = 请切换其他登录方式或升级新版本再试}，
- * 需要行为验证码，客户端基本绕不过去。因此这一路只当"锦上添花"，真正的可用路径是
- * {@link #verifyCookie} 那条 Cookie 登录——它走的是普通接口，目前稳定可用。
+ * <b>⭐ 走哪条通道决定了会不会被风控（2026-09-19 修正）：</b>
+ * <ul>
+ *   <li>{@code type=1} + 浏览器 UA = <b>网页扫码</b>。手机点确认后服务端回
+ *       {@code 8821 = 请切换其他登录方式或升级新版本再试}，要求行为验证码，这条路走不通。</li>
+ *   <li>{@code type=3} + 官方桌面版 UA = <b>PC 客户端通道</b>，不触发风控。这是现在用的。</li>
+ * </ul>
+ * 参考实现：<a href="https://github.com/ming-sc/NetMusic-BetterLogin">ming-sc/NetMusic-BetterLogin</a>
+ * （用户实机验证可用）。两个通道只差 {@code type} 与 UA 这一对参数。
+ * <p>
+ * <b>当初为什么判断错了：</b>做过一次"四种 UA × 加密/明文端点"的对照实验，结论是"全都是 801，
+ * 所以请求头不影响"。但那实验是在<b>扫码之前</b>做的，而 8821 出现在<b>手机点确认之后</b>——
+ * 唯一真正起作用的变量 {@code type} 恰恰没被纳入对照。教训：<b>结论要写清测试覆盖到哪一步</b>，
+ * 没被测到的阶段不能推断"无影响"。
+ * <p>
+ * <b>别再优化的方向：</b>CookieJar、请求头、加密/明文端点都已被排除，换它们没有意义；
+ * 真正的开关只有 {@code type} + UA 这一对。若哪天 {@code type=3} 也被拦，
+ * 下一个可试的杠杆是给轮询请求也带上 {@code os=pc; appver=3.1.6}（见 {@link #DESKTOP_COOKIE_FIELDS}）。
  */
 public final class NetEaseLoginApi {
 
+    /** 扫码登录通道：{@code 3} = PC 客户端。网页通道是 {@code 1}，会被风控回 8821，别再改回去。 */
+    private static final int QR_TYPE = 3;
+
+    /**
+     * 冒充官方 PC 客户端。与 {@link #QR_TYPE} 是<b>配套的一对</b>，缺一不可 ——
+     * 服务端要同时看到这两样，才会把请求当成桌面客户端登录，而不是"网页扫码"。
+     * <p>
+     * 字符串与参考实现逐字一致，不要"顺手美化"，也不要换成 NetMusic 的
+     * {@code getUserAgent()}（那是浏览器 UA，等于回到网页通道）。
+     */
+    private static final String DESKTOP_UA = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36"
+            + " (KHTML, like Gecko) Safari/537.36 Chrome/91.0.4472.164 NeteaseMusicDesktop/3.1.6";
+
     /** 申请二维码用的 key，不需要加密。 */
-    private static final String UNIKEY_URL = "https://music.163.com/api/login/qrcode/unikey?type=1";
+    private static final String UNIKEY_URL = "https://music.163.com/api/login/qrcode/unikey?type=" + QR_TYPE;
 
-    /** 用 key 轮询扫码结果，需要 weapi 加密。 */
-    private static final String POLL_URL = "https://music.163.com/weapi/login/qrcode/client/login?csrf_token=";
-
-    /** 未加密的轮询兜底；{@code weapi} 返回空体时改走它（实测能正常回 800/801/802/803）。 */
+    /** 轮询扫码结果。桌面客户端走的是未加密的 {@code /api/} 变体，这也是首选。 */
     private static final String PLAIN_POLL_URL = "https://music.163.com/api/login/qrcode/client/login";
+
+    /** {@code weapi} 加密轮询，仅在明文那一跳拿回空响应体时兜底。 */
+    private static final String POLL_URL = "https://music.163.com/weapi/login/qrcode/client/login?csrf_token=";
 
     /** 二维码里真正要编码的内容；手机 App 扫到它就会跳到确认页。 */
     private static final String QR_CONTENT_PREFIX = "https://music.163.com/login?codekey=";
 
     /** 拿当前账号信息，用来校验手动粘贴的 Cookie 是否有效并取出昵称。 */
     private static final String ACCOUNT_URL = "https://music.163.com/api/nuser/account/get";
+
+    /**
+     * 登录成功后补进 Cookie 的两个字段，与 {@link #DESKTOP_UA} 配套。
+     * <p>
+     * 它们不影响登录本身（登录都完成了才加），但会跟着 Cookie 一起进入 <b>播放</b>链路的请求头，
+     * 让取直链的请求也表现为桌面客户端 —— 官方桌面版就是这么带的。
+     * <p>
+     * 安全性已核对：netmusic 的 {@link EncryptUtils} <b>不读</b>这两个 cookie
+     * （javap 全类搜 {@code os}/{@code appver} 无命中），所以不会干扰 weapi 加密。
+     */
+    private static final String DESKTOP_COOKIE_FIELDS = "os=pc; appver=3.1.6";
 
     /**
      * 登录流程专用的 HttpClient：自带 CookieJar，其余（代理、超时、UA）与 NetMusic 保持一致。
@@ -86,9 +125,7 @@ public final class NetEaseLoginApi {
     /** 申请一个新二维码并返回其内容，直接交给 {@code QrCode} 编码即可。 */
     public static String requestQrContent() throws Exception {
         HttpResponse<String> response = LOGIN_CLIENT.send(
-                base(URI.create(UNIKEY_URL))
-                        .POST(HttpRequest.BodyPublishers.ofString("type=1", StandardCharsets.UTF_8))
-                        .build(),
+                base(URI.create(UNIKEY_URL)).GET().build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         String body = response.body();
         String unikey = readString(parse(body), "unikey");
@@ -101,31 +138,33 @@ public final class NetEaseLoginApi {
     /**
      * 轮询一次扫码状态。
      * <p>
-     * 先按官方网页的方式发 {@code weapi}（加密参数）；万一拿回空响应体（网易云偶发），
-     * 再退到未加密的 {@code /api/} 变体，避免一次抽风就把整个扫码流程判死。
+     * 首选未加密的 {@code /api/login/qrcode/client/login?key=..&type=3}（桌面客户端就是这么问的）；
+     * 只有它拿回空白或不可解析的响应体时，才退到 {@code weapi} 加密那一跳再问一次，
+     * 避免一次抽风就把整个扫码流程判死。
      *
      * @param qrContent {@link #requestQrContent()} 的返回值
      */
     public static PollResult poll(String qrContent) throws Exception {
         String unikey = qrContent.substring(qrContent.indexOf("codekey=") + "codekey=".length());
-        String param = EncryptUtils.encryptedParam(
-                "{\"key\":\"" + unikey + "\",\"type\":1}");
         HttpResponse<String> response = LOGIN_CLIENT.send(
-                base(URI.create(POLL_URL))
-                        .POST(HttpRequest.BodyPublishers.ofString(param, StandardCharsets.UTF_8))
+                base(URI.create(PLAIN_POLL_URL + "?key=" + unikey + "&type=" + QR_TYPE))
+                        .GET()
                         .build(),
                 HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-
         String body = response.body();
-        if (body == null || body.isBlank()) {
-            // 加密那一跳没给出东西，换明文接口再问一次；这次连 key 都放进 query 里。
-            HttpResponse<String> plain = LOGIN_CLIENT.send(
-                    base(URI.create(PLAIN_POLL_URL + "?key=" + unikey + "&type=1"))
-                            .POST(HttpRequest.BodyPublishers.noBody())
+        if (body == null || !body.trim().startsWith("{")) {
+            HttpResponse<String> encrypted = LOGIN_CLIENT.send(
+                    base(URI.create(POLL_URL))
+                            .POST(HttpRequest.BodyPublishers.ofString(
+                                    EncryptUtils.encryptedParam(
+                                            "{\"key\":\"" + unikey + "\",\"type\":" + QR_TYPE + "}"),
+                                    StandardCharsets.UTF_8))
                             .build(),
                     HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-            body = plain.body();
-            response = plain;
+            if (encrypted.body() != null && encrypted.body().trim().startsWith("{")) {
+                response = encrypted;
+                body = encrypted.body();
+            }
         }
         JsonObject root = parse(body);
         int code = root.has("code") ? root.get("code").getAsInt() : -1;
@@ -134,6 +173,9 @@ public final class NetEaseLoginApi {
         if (cookie.isBlank()) {
             // 个别版本把登录票放在响应头里，兜一手。
             cookie = extractMusicU(response.headers().allValues("Set-Cookie"));
+        }
+        if (code == 803 && !cookie.isBlank()) {
+            cookie = withDesktopFields(cookie);
         }
         String nickname = "";
         if (root.has("profile") && root.getAsJsonObject("profile").isJsonObject()) {
@@ -183,22 +225,41 @@ public final class NetEaseLoginApi {
 
     // ─────────────────────────── 内部工具 ───────────────────────────
 
-    private static String post(String url, String form) throws Exception {
-        HttpResponse<String> response = NetWorker.send(
-                base(URI.create(url))
-                        .POST(HttpRequest.BodyPublishers.ofString(form, StandardCharsets.UTF_8))
-                        .build(),
-                HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        return response.body();
-    }
-
     /** 网易云要求带 Origin/Referer/UA，换个这几个头就容易拿到 400 或空响应。 */
     private static HttpRequest.Builder base(URI uri) {
         return HttpRequest.newBuilder(uri)
                 .header("Origin", "https://music.163.com")
                 .header("Referer", "https://music.163.com/")
-                .header("User-Agent", NetEaseMusic.getUserAgent())
+                .header("User-Agent", DESKTOP_UA)
                 .header("Content-Type", "application/x-www-form-urlencoded");
+    }
+
+    /**
+     * 给登录成功的 Cookie 补上桌面客户端的身份字段（见 {@link #DESKTOP_COOKIE_FIELDS}）。
+     * <p>
+     * 按 <b>cookie 名</b>比对而不是拿整串做子串匹配：{@code MUSIC_U} 的值是一长串 base64，
+     * 子串匹配有概率被值里的字符骗到，那样就会漏加字段。
+     */
+    private static String withDesktopFields(String cookie) {
+        String value = cookie == null ? "" : cookie.trim();
+        if (value.isEmpty()) {
+            return value;
+        }
+        Set<String> present = new HashSet<>();
+        for (String part : value.split(";")) {
+            int eq = part.indexOf('=');
+            if (eq > 0) {
+                present.add(part.substring(0, eq).trim().toLowerCase(Locale.ROOT));
+            }
+        }
+        StringBuilder result = new StringBuilder(value);
+        for (String field : DESKTOP_COOKIE_FIELDS.split(";")) {
+            String item = field.trim();
+            if (!present.contains(item.split("=", 2)[0].toLowerCase(Locale.ROOT))) {
+                result.append("; ").append(item);
+            }
+        }
+        return result.toString();
     }
 
     private static JsonObject parse(String body) {
@@ -236,8 +297,8 @@ public final class NetEaseLoginApi {
      * 一次轮询的结果。
      *
      * @param code     网易云的状态码：800 过期、801 待扫、802 待确认、803 成功、
-     *                 8821 风控拦截（需行为验证码，客户端绕不过）
-     * @param cookie   登录成功时的整条 Cookie
+     *                 8821 风控拦截（需行为验证码）
+     * @param cookie   登录成功时的整条 Cookie，已补上桌面客户端字段
      * @param nickname 登录成功时的昵称
      * @param message  服务端给的说明，仅用于排错
      */
@@ -264,8 +325,8 @@ public final class NetEaseLoginApi {
         /**
          * 是否被网易云风控挡下来了。
          * <p>
-         * 这不是本模组能修的东西：服务端要求行为验证码，客户端再怎么重试也是同一个结果。
-         * 界面遇到它应当停止轮询并引导玩家改用 Cookie 登录，而不是每 2 秒撞一次墙。
+         * 走 {@code type=3} 桌面客户端通道后基本不会出现；真出现的话说明风控又收紧了，
+         * 界面应当停止轮询并引导玩家改用 Cookie 登录，而不是每 2 秒撞一次墙。
          */
         public boolean riskControlled() {
             return code == CODE_RISK_CONTROL;
