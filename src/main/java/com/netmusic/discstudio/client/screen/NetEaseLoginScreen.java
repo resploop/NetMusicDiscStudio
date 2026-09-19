@@ -16,17 +16,25 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 网易云账号登录界面：<b>以粘贴 Cookie 为主，扫码是备选</b>。
+ * 网易云账号登录界面：<b>以扫码为主，粘贴 Cookie 是备选</b>。
  * <p>
  * 登录态本身由 {@link NetEaseSession} 保存并注入 NetMusic 的 WebApi，本界面只负责
  * "拿到一条可用的 Cookie"这一件事。
  * <p>
- * <b>为什么把 Cookie 放主位：</b>实测（以及与 ncmctl 等仍在维护的第三方实现的说法一致）
- * 网易云对扫码登录的风控非常严：手机确认之后服务端会回 {@code 8821 需要行为验证码}，
- * 客户端无解。更关键的是，这个拦截<b>不取决于我们的请求怎么写</b>——加密的 weapi 与
- * 未加密的 /api 两个轮询端点、新旧两套 User-Agent，在未扫码时都稳定返回 {@code 801 等待扫码}，
- * 拦截只发生在手机点确认的那一刻。所以扫码这条路保留，但不再作为默认入口：
- * 不点「扫码登录」就<b>一个请求都不发</b>，免得白白给账号招风控。
+ * <b>扫码是一等路径（2026-09-19 修正）：</b>此前判断"扫码必被风控拦（8821）"，那个结论是错的——
+ * 当时的对照实验只换了 User-Agent 与加密/明文端点，唯一真正起作用的变量 {@code type} 没被纳入，
+ * 而 {@code type} 恰恰是开关：{@code 1} 是网页扫码（会被拦），{@code 3} 是 PC 客户端通道（不被拦）。
+ * 改用 {@code type=3} + 官方桌面版 UA 后扫码恢复正常，细节见
+ * {@link NetEaseLoginApi} 的类注释。
+ * <p>
+ * <b>默认就进扫码（2026-09-19，实测可用之后）：</b>打开界面即进扫码模式，并<b>立刻申请一张二维码</b>，
+ * 玩家把手机掏出来扫就行；Cookie 那条路退成备用，点「用 Cookie 登录」才展开输入框。
+ * 只有<b>已经登录</b>时才反过来：直接显示"当前已登录：昵称"，不申请二维码——
+ * 玩家可能只是来看一眼登录状态，没必要为这张码开一次会话。
+ * <p>
+ * 两种模式<b>共用同一批控件</b>，切换只改 {@code visible} 与坐标，不重建：MC 的
+ * {@code AbstractWidget.isActive()} 就是 {@code visible && active}，渲染、命中测试与焦点导航
+ * 都以它为前提，所以"藏起来"的控件点不到也 Tab 不到，不需要真的把控件摘掉。
  * <p>
  * 界面继承 NetMusicCanPlayBili 的黑金主题，与唱片机、换 BV 那几个界面保持一致的观感。
  * 它不绑定任何方块实体，所以 {@code blockPos} 传 {@link BlockPos#ZERO}。
@@ -62,12 +70,22 @@ public class NetEaseLoginScreen extends BlackGoldScreen {
         return thread;
     });
 
+    /** Cookie 输入框；只在 Cookie 模式可见。 */
     private EditBox cookieField;
-    /** 中间那颗按钮，在两种模式间换文案（扫码登录 / 收起二维码），所以要留引用。 */
+    /** Cookie 模式下的「Cookie 登录」按钮；扫码模式下藏起来。 */
+    private BlackGoldButton cookieButton;
+    /** 模式切换按钮：扫码模式下是「用 Cookie 登录」，Cookie 模式下是「扫码登录」，所以要留引用换文案。 */
     private BlackGoldButton modeButton;
+    /** 退出登录。两种模式都在，位置随模式变。 */
+    private BlackGoldButton logoutButton;
 
-    /** 是否处在扫码模式。默认关闭 —— 不发请求，也就不会撞上风控。 */
-    private volatile boolean qrMode;
+    /**
+     * 是否处在扫码模式。
+     * <p>
+     * 只在渲染线程读写（{@code buildWidgets}/{@code setQrMode}/{@code drawContent} 全在渲染线程），
+     * 工作线程不碰它。真正需要跨线程的那些字段是下面 {@link #qrContent} 几个。
+     */
+    private boolean qrMode;
     /** 当前二维码内容；空串表示"没有在等的二维码"。 */
     private volatile String qrContent = "";
     /** 界面底部的状态行。Component 不可变，跨线程读写安全。 */
@@ -146,28 +164,102 @@ public class NetEaseLoginScreen extends BlackGoldScreen {
     @Override
     protected void buildWidgets() {
         int bx = boxX();
-        int inner = BOX_W - PAD * 2;
 
-        cookieField = new EditBox(font, bx + PAD, fieldY(), inner, FIELD_H, Component.empty());
+        cookieField = new EditBox(font, bx + PAD, fieldY(), BOX_W - PAD * 2, FIELD_H, Component.empty());
         cookieField.setMaxLength(4096);
         cookieField.setHint(Component.translatable("gui.netmusic_disc_studio.netease.cookie_hint"));
         addRenderableWidget(cookieField);
 
-        int third = (inner - 16) / 3;
-        int y = buttonY();
-        addRenderableWidget(new BlackGoldButton(bx + PAD, y, third, FIELD_H,
+        // 三个按钮先按 0 尺寸建出来，位置与宽度统一交给 layoutWidgets() —— 两种模式的排布不一样。
+        cookieButton = new BlackGoldButton(0, 0, 0, FIELD_H,
                 Component.translatable("gui.netmusic_disc_studio.netease.use_cookie"),
-                button -> submitCookie(), GOLD));
-        modeButton = new BlackGoldButton(bx + PAD + third + 8, y, third, FIELD_H,
-                modeButtonLabel(), button -> setQrMode(!qrMode), TEXT_SECONDARY);
+                button -> submitCookie(), GOLD);
+        addRenderableWidget(cookieButton);
+        modeButton = new BlackGoldButton(0, 0, 0, FIELD_H, modeButtonLabel(),
+                button -> setQrMode(!qrMode), TEXT_SECONDARY);
         addRenderableWidget(modeButton);
-        addRenderableWidget(new BlackGoldButton(bx + PAD + (third + 8) * 2, y, third, FIELD_H,
+        logoutButton = new BlackGoldButton(0, 0, 0, FIELD_H,
                 Component.translatable("gui.netmusic_disc_studio.netease.logout"),
-                button -> logout(), TEXT_SECONDARY));
+                button -> logout(), TEXT_SECONDARY);
+        addRenderableWidget(logoutButton);
 
-        // 界面重建（例如改窗口大小）时不要重新申请二维码，否则扫到一半就被换掉了。
-        // 这里刻意不主动取码：没点「扫码登录」就一个请求都不发。
-        started = true;
+        // 只在第一次进来时定默认模式。界面重建（改窗口大小、重载资源）不走这里，
+        // 否则玩家自己切到 Cookie 模式后动一下窗口就被弹回扫码，而且正在等的那张码会被换掉。
+        boolean first = !started;
+        if (first) {
+            qrMode = !NetEaseSession.loggedIn();
+            started = true;
+        }
+        layoutWidgets();
+
+        if (first && qrMode) {
+            // 打开界面就把码取回来 —— 扫码是主路径，没道理让玩家再点一下。
+            // 取码这一步不涉及账号，也不会触发风控（8821 只在手机点确认那一刻由服务端判定）。
+            startLogin();
+        }
+    }
+
+    /**
+     * 按当前模式摆放控件。
+     * <p>
+     * 共用同一批控件、只改 {@code visible} 与坐标，不重建：重建会把正在等的那张二维码连同
+     * 输入框里已经贴了一半的 Cookie 一起丢掉。隐藏侧的安全性见类注释（{@code visible=false}
+     * ⇒ 渲染、点击、Tab 焦点三条路全都够不着）。
+     */
+    private void layoutWidgets() {
+        int bx = boxX();
+        int inner = BOX_W - PAD * 2;
+        int y = buttonY();
+
+        if (cookieField != null) {
+            cookieField.setX(bx + PAD);
+            cookieField.setY(fieldY());
+            cookieField.setWidth(inner);
+            cookieField.setVisible(!qrMode);
+        }
+
+        if (qrMode) {
+            // 扫码模式：输入框收起来，那一排只放「用 Cookie 登录 / 退出登录」。
+            int half = (inner - 8) / 2;
+            place(modeButton, bx + PAD, y, half);
+            place(logoutButton, bx + PAD + half + 8, y, half);
+        } else {
+            int third = (inner - 16) / 3;
+            place(cookieButton, bx + PAD, y, third);
+            place(modeButton, bx + PAD + third + 8, y, third);
+            place(logoutButton, bx + PAD + (third + 8) * 2, y, third);
+        }
+        show(cookieButton, !qrMode);
+
+        if (modeButton != null) {
+            modeButton.setMessage(modeButtonLabel());
+        }
+
+        if (qrMode) {
+            // 收起来的输入框不能留着焦点，否则玩家打的字会进到一个看不见的框里。
+            if (getFocused() == cookieField) {
+                clearFocus();
+            }
+        } else if (cookieField != null) {
+            // 切到 Cookie 模式就把光标放进输入框，玩家 Ctrl+V 即可。
+            setFocused(cookieField);
+        }
+    }
+
+    private static void place(BlackGoldButton button, int x, int y, int width) {
+        if (button == null) {
+            return;
+        }
+        button.setX(x);
+        button.setY(y);
+        button.setWidth(width);
+        button.visible = true;
+    }
+
+    private static void show(BlackGoldButton button, boolean visible) {
+        if (button != null) {
+            button.visible = visible;
+        }
     }
 
     @Override
@@ -176,13 +268,13 @@ public class NetEaseLoginScreen extends BlackGoldScreen {
 
     private Component modeButtonLabel() {
         return Component.translatable(qrMode
-                ? "gui.netmusic_disc_studio.netease.qr_collapse"
+                ? "gui.netmusic_disc_studio.netease.switch_to_cookie"
                 : "gui.netmusic_disc_studio.netease.qr_button");
     }
 
     // ─────────────────────────── 扫码模式 ───────────────────────────
 
-    /** 进/出扫码模式。进入时才去申请二维码，退出立刻停止轮询。 */
+    /** 进/出扫码模式。进入时（且手上没有码）才去申请二维码，退出立刻停止轮询。 */
     private void setQrMode(boolean on) {
         qrMode = on;
         ticksSincePoll = 0;
@@ -191,9 +283,7 @@ public class NetEaseLoginScreen extends BlackGoldScreen {
         if (on && qrContent.isEmpty()) {
             startLogin();
         }
-        if (modeButton != null) {
-            modeButton.setMessage(modeButtonLabel());
-        }
+        layoutWidgets();
     }
 
     @Override
@@ -338,19 +428,18 @@ public class NetEaseLoginScreen extends BlackGoldScreen {
         });
     }
 
-    /** 退出登录，回到未登录的 Cookie 引导。 */
+    /** 退出登录，回到扫码这条主路径。 */
     private void logout() {
         NetEaseSession.clear();
         if (cookieField != null) {
             cookieField.setValue("");
         }
-        status = Component.translatable("gui.netmusic_disc_studio.netease.logged_out");
+        // 旧的那张码连着上一个账号的会话，清掉；setQrMode(true) 里会顺带申请一张新的。
         qrContent = "";
         riskControlled = false;
         ticksSincePoll = 0;
-        if (qrMode) {
-            setQrMode(false);
-        }
+        setQrMode(true);
+        status = Component.translatable("gui.netmusic_disc_studio.netease.logged_out");
     }
 
     private static Component displayName() {
